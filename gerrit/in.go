@@ -43,6 +43,8 @@ var (
 type inParams struct {
 	FetchProtocol string `json:"fetch_protocol"`
 	FetchUrl      string `json:"fetch_url"`
+	PrivateKey    string `json:"private_key"`
+	Submodules    string `json:"submodules"`
 }
 
 func init() {
@@ -90,14 +92,21 @@ func in(req resource.InRequest) error {
 		return err
 	}
 
-	configArgs, err := authMan.gitConfigArgs()
-	if err != nil {
-		return fmt.Errorf("error getting git config args: %v", err)
-	}
-	for key, value := range configArgs {
-		err = git(req.TargetDir(), "config", key, value)
+	if params.FetchProtocol == "ssh" && params.PrivateKey != "" {
+		err := setupSSHAuth(params.PrivateKey)
 		if err != nil {
 			return err
+		}
+	} else {
+		configArgs, err := authMan.gitConfigArgs()
+		if err != nil {
+			return fmt.Errorf("error getting git config args: %v", err)
+		}
+		for key, value := range configArgs {
+			err = git(req.TargetDir(), "config", key, value)
+			if err != nil {
+				return err
+			}
 		}
 	}
 
@@ -116,9 +125,11 @@ func in(req resource.InRequest) error {
 		return err
 	}
 
-	err = git(dir, "submodule", "update", "--init", "--recursive")
-	if err != nil {
-		return err
+	if params.Submodules != "none" {
+		err = git(dir, "submodule", "update", "--init", "--recursive")
+		if err != nil {
+			return err
+		}
 	}
 
 	// Build response metadata
@@ -239,4 +250,35 @@ func buildRevisionLink(src Source, changeNum int, psNum int) (string, error) {
 	}
 	srcUrl.Path = path.Join(srcUrl.Path, fmt.Sprintf("c/%d/%d", changeNum, psNum))
 	return srcUrl.String(), nil
+}
+
+func setupSSHAuth(privateKey string) error {
+	homedir, err := os.UserHomeDir()
+	if err != nil {
+		return err
+	}
+	sshdir := path.Join(homedir, ".ssh")
+	err = os.Mkdir(sshdir, 0700)
+	if err != nil {
+		return err
+	}
+
+	idFile := path.Join(sshdir, "gerrit-private-key")
+	f, err := os.OpenFile(idFile, os.O_WRONLY|os.O_CREATE, 0600)
+	if err != nil {
+		return fmt.Errorf("error opening gerrit-private-key file: %v", err)
+	}
+	f.WriteString(privateKey)
+	f.WriteString("\n")
+	f.Close()
+
+	cf, err := os.OpenFile(path.Join(sshdir, "config"), os.O_WRONLY|os.O_CREATE, 0600)
+	if err != nil {
+		return err
+	}
+	cf.WriteString("StrictHostKeyChecking no\n")
+	cf.WriteString(fmt.Sprintf("IdentityFile %s\n", idFile))
+	cf.Close()
+
+	return nil
 }
