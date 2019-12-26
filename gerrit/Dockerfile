@@ -12,12 +12,21 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-FROM concourse/buildroot:git
+#FROM concourse/buildroot:git
+FROM alpine:3.8
+
+RUN apk --no-cache add \
+		bash \
+		curl \
+		git \
+		gzip \
+		tar \
+		openssh-client
 
 WORKDIR /opt/resource
 
 ADD gerrit-resource .
-RUN chmod +x gerrit-resource
-RUN ln -s gerrit-resource check
-RUN ln -s gerrit-resource in
-RUN ln -s gerrit-resource out
+RUN chmod +x gerrit-resource && \
+		ln -s gerrit-resource check && \
+		ln -s gerrit-resource in && \
+		ln -s gerrit-resource out
