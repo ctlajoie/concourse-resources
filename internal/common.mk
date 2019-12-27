@@ -15,10 +15,10 @@
 TREE_NAME=$(shell git write-tree)
 DIRTY_MARK=-dirty-$(shell git rev-parse --short ${TREE_NAME})
 #BUILD=$(shell git describe --always --dirty=${DIRTY_MARK})
-BUILD=0.0.3
+BUILD=0.0.4
 
 IMAGE_NAME=520696072260.dkr.ecr.us-west-2.amazonaws.com/${NAME}
-IMAGE_TAG=${IMAGE_NAME}:${BUILD}
+IMAGE_TAG?=${BUILD}
 
 LDFLAGS=-ldflags "-X main.Build=${BUILD}"
 
@@ -36,10 +36,10 @@ clean:
 
 image: build
 	cp Dockerfile build/
-	docker build -t ${IMAGE_TAG} build/
+	docker build -t ${IMAGE_NAME}:${IMAGE_TAG} build/
 
 image-push: image
-	docker -- push ${IMAGE_TAG}
+	docker -- push ${IMAGE_NAME}:${IMAGE_TAG}
 
 image-run: image
-	docker run --rm -it ${IMAGE_TAG} /bin/sh
+	docker run --rm -it ${IMAGE_NAME}:${IMAGE_TAG} /bin/sh

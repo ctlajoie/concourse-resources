@@ -45,6 +45,7 @@ type inParams struct {
 	FetchUrl      string `json:"fetch_url"`
 	PrivateKey    string `json:"private_key"`
 	Submodules    string `json:"submodules"`
+	SkipFetch     bool   `json:"skip_fetch"`
 }
 
 func init() {
@@ -77,62 +78,100 @@ func in(req resource.InRequest) error {
 		return err
 	}
 
-	fetchUrl, fetchRef, err := resolveFetchUrlRef(params, rev)
-	if err != nil {
-		return fmt.Errorf("could not resolve fetch args for change %q: %v", change.ID, err)
-	}
+	if !params.SkipFetch {
+		fetchUrl, fetchRef, err := resolveFetchUrlRef(params, rev)
+		if err != nil {
+			return fmt.Errorf("could not resolve fetch args for change %q: %v", change.ID, err)
+		}
 
-	// Prepare destination repo and checkout requested revision
-	err = git(dir, "init")
-	if err != nil {
-		return err
-	}
-	err = git(dir, "config", "color.ui", "always")
-	if err != nil {
-		return err
-	}
-
-	if params.FetchProtocol == "ssh" && params.PrivateKey != "" {
-		err := setupSSHAuth(params.PrivateKey)
+		// Prepare destination repo and checkout requested revision
+		err = git(dir, "init")
 		if err != nil {
 			return err
 		}
-	} else {
-		configArgs, err := authMan.gitConfigArgs()
+		err = git(dir, "config", "color.ui", "always")
 		if err != nil {
-			return fmt.Errorf("error getting git config args: %v", err)
+			return err
 		}
-		for key, value := range configArgs {
-			err = git(req.TargetDir(), "config", key, value)
+
+		if params.FetchProtocol == "ssh" && params.PrivateKey != "" {
+			err := setupSSHAuth(params.PrivateKey)
+			if err != nil {
+				return err
+			}
+		} else {
+			configArgs, err := authMan.gitConfigArgs()
+			if err != nil {
+				return fmt.Errorf("error getting git config args: %v", err)
+			}
+			for key, value := range configArgs {
+				err = git(req.TargetDir(), "config", key, value)
+				if err != nil {
+					return err
+				}
+			}
+		}
+
+		err = git(dir, "remote", "add", "origin", fetchUrl)
+		if err != nil {
+			return err
+		}
+
+		err = git(dir, "fetch", "origin", fetchRef)
+		if err != nil {
+			return err
+		}
+
+		err = git(dir, "checkout", "FETCH_HEAD")
+		if err != nil {
+			return err
+		}
+
+		if params.Submodules != "none" {
+			err = git(dir, "submodule", "update", "--init", "--recursive")
 			if err != nil {
 				return err
 			}
 		}
 	}
 
-	err = git(dir, "remote", "add", "origin", fetchUrl)
+	// Build response metadata
+	err = addResponseMetadata(src, ver, change, rev, req)
 	if err != nil {
-		return err
+		return fmt.Errorf("error adding response metadata: %v", err)
 	}
 
-	err = git(dir, "fetch", "origin", fetchRef)
+	// Write gerrit_version.json
+	gerritVersionPath := filepath.Join(dir, gerritVersionFilename)
+	err = ver.WriteToFile(gerritVersionPath)
 	if err != nil {
-		return err
+		return fmt.Errorf("error writing %q: %v", gerritVersionPath, err)
 	}
 
-	err = git(dir, "checkout", "FETCH_HEAD")
-	if err != nil {
-		return err
-	}
-
-	if params.Submodules != "none" {
-		err = git(dir, "submodule", "update", "--init", "--recursive")
-		if err != nil {
-			return err
+	// Ignore gerrit_version.json file in repo
+	excludePath := filepath.Join(dir, ".git", "info", "exclude")
+	excludeErr := os.MkdirAll(filepath.Dir(excludePath), 0755)
+	if excludeErr == nil {
+		f, excludeErr := os.OpenFile(excludePath, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0644)
+		if excludeErr == nil {
+			defer f.Close()
+			_, excludeErr = fmt.Fprintf(f, "\n/%s\n", gerritVersionFilename)
 		}
 	}
+	if excludeErr != nil {
+		log.Printf("error adding %q to %q: %v", gerritVersionPath, excludePath, excludeErr)
+	}
 
-	// Build response metadata
+	return nil
+}
+
+func addResponseMetadata(
+	src Source,
+	ver Version,
+	change *gerrit.ChangeInfo,
+	rev *gerrit.RevisionInfo,
+	req resource.InRequest,
+) error {
 	req.AddResponseMetadata("project", change.Project)
 	req.AddResponseMetadata("branch", change.Branch)
 	req.AddResponseMetadata("change subject", change.Subject)
@@ -159,11 +198,10 @@ func in(req resource.InRequest) error {
 	}
 
 	link, err := buildRevisionLink(src, change.ChangeNumber, rev.PatchSetNumber)
-	if err == nil {
-		req.AddResponseMetadata("revision link", link)
-	} else {
-		log.Printf("error building revision link: %v", err)
+	if err != nil {
+		return fmt.Errorf("error building revision link: %v", err)
 	}
+	req.AddResponseMetadata("revision link", link)
 
 	req.AddResponseMetadata("commit id", ver.Revision)
 
@@ -178,27 +216,6 @@ func in(req resource.InRequest) error {
 		}
 
 		req.AddResponseMetadata("commit message", rev.Commit.Message)
-	}
-
-	// Write gerrit_version.json
-	gerritVersionPath := filepath.Join(dir, gerritVersionFilename)
-	err = ver.WriteToFile(gerritVersionPath)
-	if err != nil {
-		return fmt.Errorf("error writing %q: %v", gerritVersionPath, err)
-	}
-
-	// Ignore gerrit_version.json file in repo
-	excludePath := filepath.Join(dir, ".git", "info", "exclude")
-	excludeErr := os.MkdirAll(filepath.Dir(excludePath), 0755)
-	if excludeErr == nil {
-		f, excludeErr := os.OpenFile(excludePath, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0644)
-		if excludeErr == nil {
-			defer f.Close()
-			_, excludeErr = fmt.Fprintf(f, "\n/%s\n", gerritVersionFilename)
-		}
-	}
-	if excludeErr != nil {
-		log.Printf("error adding %q to %q: %v", gerritVersionPath, excludePath, excludeErr)
 	}
 
 	return nil
