@@ -15,7 +15,7 @@
 TREE_NAME=$(shell git write-tree)
 DIRTY_MARK=-dirty-$(shell git rev-parse --short ${TREE_NAME})
 #BUILD=$(shell git describe --always --dirty=${DIRTY_MARK})
-BUILD=0.0.4
+BUILD=0.0.5
 
 IMAGE_NAME=520696072260.dkr.ecr.us-west-2.amazonaws.com/${NAME}
 IMAGE_TAG?=${BUILD}
